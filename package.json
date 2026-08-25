@@ -1,0 +1,35 @@
+{
+  "name": "fomo",
+  "version": "0.2.0",
+  "description": "Read-only Fomo trader, wallet, clan, and strategy intelligence CLI",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "fomo": "./bin/fomo.js"
+  },
+  "scripts": {
+    "fomo": "node src/cli.ts",
+    "analyze": "node src/cli.ts analyze",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts"
+  },
+  "keywords": [
+    "fomo",
+    "trader-intelligence",
+    "memecoin",
+    "pnl",
+    "wallet-analysis",
+    "clan-analysis"
+  ],
+  "engines": {
+    "node": ">=23"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "impit": "^0.14.3",
+    "playwright-core": "^1.62.1"
+  }
+}

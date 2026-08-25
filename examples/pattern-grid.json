@@ -1,0 +1,11 @@
+{
+  "lookbackDays": [30, 60, 90],
+  "minClosed": [3, 6, 12],
+  "minWinRate": [0.5, 0.55, 0.6],
+  "minProfitFactor": [1, 1.25, 1.5],
+  "maxDrawdownPct": [25, 40, 60],
+  "topTraders": [3, 5, 10],
+  "positionUsd": [100, 250, 500],
+  "slippageBps": [25, 75, 150],
+  "delaySeconds": [15, 60, 180]
+}

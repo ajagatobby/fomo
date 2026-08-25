@@ -1,0 +1,8 @@
+.env
+node_modules/
+dist/
+*.log
+profile.json
+.DS_Store
+*.md
+docs/
