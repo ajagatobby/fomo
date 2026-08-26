@@ -1,6 +1,3 @@
-import { mkdir, chmod } from "node:fs/promises";
-import { homedir } from "node:os";
-import path from "node:path";
 import { chromium } from "playwright-core";
 import type { BrowserContext, Page, Response } from "playwright-core";
 import {
@@ -12,7 +9,6 @@ import {
 
 const APP_ORIGIN = "https://fomo.family";
 const API_ORIGIN = "https://prod-api.fomo.family";
-const PROFILE_DIR = path.join(homedir(), ".fomo", "browser-profile");
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1_000;
 
 type AuthHeaders = {
@@ -22,12 +18,12 @@ type AuthHeaders = {
 };
 
 /**
- * Opens the dedicated Fomo Chrome profile for an interactive login.
- * Tokens are copied to macOS Keychain after authentication and are never logged.
+ * Opens an ephemeral Chrome context for interactive login and copies the
+ * resulting credentials to macOS Keychain.
  */
 export async function loginFomo(): Promise<void> {
-  await prepareProfileDirectory();
-  const context = await launchContext(false);
+  const browser = await chromium.launch({ channel: "chrome", headless: false });
+  const context = await browser.newContext();
   try {
     const authenticated = waitForHeaders(context, LOGIN_TIMEOUT_MS, true);
     const page = context.pages()[0] ?? (await context.newPage());
@@ -46,6 +42,7 @@ export async function loginFomo(): Promise<void> {
     });
   } finally {
     await context.close();
+    await browser.close();
   }
 }
 
@@ -54,21 +51,6 @@ export async function openFomoSession(
   options?: FomoDirectSessionOptions,
 ): Promise<FomoDirectSession> {
   return openDirectFomoSession(options);
-}
-
-async function launchContext(headless: boolean): Promise<BrowserContext> {
-  return chromium.launchPersistentContext(PROFILE_DIR, {
-    channel: "chrome",
-    headless,
-  });
-}
-
-async function prepareProfileDirectory(): Promise<void> {
-  const parent = path.dirname(PROFILE_DIR);
-  await mkdir(parent, { recursive: true, mode: 0o700 });
-  await mkdir(PROFILE_DIR, { recursive: true, mode: 0o700 });
-  await chmod(parent, 0o700).catch(() => undefined);
-  await chmod(PROFILE_DIR, 0o700).catch(() => undefined);
 }
 
 function waitForHeaders(

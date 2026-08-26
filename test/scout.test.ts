@@ -25,7 +25,7 @@ test("scout universe deduplicates sources and prioritizes official rank", () => 
 
 test("scout recommendations gate candidates on completeness", () => {
   const start = Date.parse("2026-01-01T00:00:00Z");
-  const stored = {
+  const researchUser = {
     id: alpha.id,
     userHandle: alpha.userHandle,
     handle: alpha.userHandle,
@@ -34,14 +34,12 @@ test("scout recommendations gate candidates on completeness", () => {
     clanName: null,
     address: null,
     evmAddress: null,
-    firstObservedAt: new Date(start).toISOString(),
-    syncedAt: new Date(start).toISOString(),
   };
   const swaps = [
     swap("buy-1", 1, "buy", 100), swap("sell-1", 2, "sell", 150),
     swap("buy-2", 3, "buy", 100), swap("sell-2", 4, "sell", 140),
   ];
-  const dataset: ResearchDataset = { users: [stored], swaps };
+  const dataset: ResearchDataset = { users: [researchUser], swaps };
   const ranked = rankTraders(dataset, { since: start, until: start + 5 * 86_400_000 }, {
     minTrades: 0,
     minClosed: 1,
@@ -58,7 +56,6 @@ test("scout recommendations gate candidates on completeness", () => {
       userId: alpha.id,
       userHandle: alpha.userHandle,
       createdAt,
-      observedAt: new Date(Date.parse(createdAt) + 5_000).toISOString(),
       inNetworkId: "8453",
       outNetworkId: "8453",
       inTokenAddress: side === "buy" ? "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" : "0xtoken",

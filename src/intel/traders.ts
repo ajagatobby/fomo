@@ -1,4 +1,4 @@
-import type { FomoSwap, ResearchDataset, StoredFomoUser } from "../fomo/types.ts";
+import type { FomoSwap, ResearchDataset, ResearchUser } from "../fomo/types.ts";
 
 export type TimeInput = number | string | Date;
 
@@ -15,14 +15,12 @@ export type NormalizedTradeEvent = {
   userId: string;
   userHandle: string;
   eventTime: number;
-  observedTime: number | null;
   side: TradeSide;
   networkId: string | null;
   tokenAddress: string | null;
   tokenKey: string | null;
   tokenAmount: number | null;
   cashUsd: number | null;
-  copyDelaySeconds: number | null;
   swap: FomoSwap;
 };
 
@@ -31,7 +29,6 @@ export type RealizedOutcome = {
   userId: string;
   userHandle: string;
   eventTime: number;
-  observedTime: number | null;
   networkId: string;
   tokenAddress: string;
   tokenKey: string;
@@ -45,10 +42,6 @@ export type RealizedOutcome = {
   holdSecondsEstimate: number | null;
   /** Earliest acquisition still represented by the average-cost pool. */
   basisOpenedAt: number;
-  /** Latest observation among acquisitions still represented by the average-cost pool. */
-  basisObservedAt: number | null;
-  /** Conservative worst observation lag among acquisitions represented by the pool. */
-  basisMaxObservationLagSeconds: number | null;
 };
 
 export type TraderMetrics = {
@@ -81,11 +74,10 @@ export type TraderMetrics = {
   basisCoverage: number;
   medianTicketUsd: number | null;
   medianHoldSeconds: number | null;
-  copyableRatio: number;
 };
 
 export type TraderAnalysis = {
-  user: StoredFomoUser;
+  user: ResearchUser;
   metrics: TraderMetrics;
   events: NormalizedTradeEvent[];
   outcomes: RealizedOutcome[];
@@ -95,7 +87,6 @@ export type TraderMetricOptions = {
   bayesianPriorWins?: number;
   bayesianPriorLosses?: number;
   profitFactorCap?: number;
-  copyableDelaySeconds?: number;
 };
 
 export type TraderRankingOptions = TraderMetricOptions & {
@@ -124,7 +115,6 @@ export type RankedTrader = {
     outcomes: RankingComponent;
     consistency: RankingComponent;
     riskControl: RankingComponent;
-    copyability: RankingComponent;
   };
   analysis: TraderAnalysis;
 };
@@ -167,8 +157,6 @@ type Book = {
   coveredCostUsd: number;
   acquiredAtWeightedMs: number;
   basisOpenedAt: number;
-  basisObservedAt: number | null;
-  basisMaxObservationLagMs: number | null;
 };
 
 type LedgerResult = {
@@ -243,7 +231,6 @@ export function normalizeSwap(swap: FomoSwap): NormalizedTradeEvent | null {
   const eventTime = optionalTimestamp(swap.createdAt);
   if (eventTime === null) return null;
 
-  const observedTime = optionalTimestamp(swap.observedAt);
   const inCash = classifyCashAsset(swap.inNetworkId, swap.inTokenAddress);
   const outCash = classifyCashAsset(swap.outNetworkId, swap.outTokenAddress);
   let side: TradeSide = "other";
@@ -271,14 +258,12 @@ export function normalizeSwap(swap: FomoSwap): NormalizedTradeEvent | null {
     userId: String(swap.userId),
     userHandle: String(swap.userHandle),
     eventTime,
-    observedTime,
     side,
     networkId,
     tokenAddress: address,
     tokenKey: networkId && address ? tokenKey(networkId, address) : null,
     tokenAmount: amount,
     cashUsd,
-    copyDelaySeconds: observedTime === null ? null : Math.max(0, (observedTime - eventTime) / 1_000),
     swap,
   };
 }
@@ -312,8 +297,6 @@ function runLedger(events: readonly NormalizedTradeEvent[], since: number, until
         coveredCostUsd: 0,
         acquiredAtWeightedMs: 0,
         basisOpenedAt: event.eventTime,
-        basisObservedAt: null,
-        basisMaxObservationLagMs: null,
       };
       books.set(event.tokenKey, book);
     }
@@ -327,18 +310,8 @@ function runLedger(events: readonly NormalizedTradeEvent[], since: number, until
         book.acquiredAtWeightedMs = oldCoveredQty > EPSILON
           ? (book.acquiredAtWeightedMs * oldCoveredQty + event.eventTime * event.tokenAmount) / book.coveredQty
           : event.eventTime;
-        const observationLag = event.observedTime === null ? null : Math.max(0, event.observedTime - event.eventTime);
         if (oldCoveredQty <= EPSILON) {
           book.basisOpenedAt = event.eventTime;
-          book.basisObservedAt = event.observedTime;
-          book.basisMaxObservationLagMs = observationLag;
-        } else {
-          book.basisObservedAt = book.basisObservedAt === null || event.observedTime === null
-            ? null
-            : Math.max(book.basisObservedAt, event.observedTime);
-          book.basisMaxObservationLagMs = book.basisMaxObservationLagMs === null || observationLag === null
-            ? null
-            : Math.max(book.basisMaxObservationLagMs, observationLag);
         }
         currentCapitalAtRiskUsd += event.cashUsd;
         if (event.eventTime >= since) {
@@ -362,10 +335,6 @@ function runLedger(events: readonly NormalizedTradeEvent[], since: number, until
       ? Math.max(0, (event.eventTime - book.acquiredAtWeightedMs) / 1_000)
       : null;
     const basisOpenedAt = book.basisOpenedAt;
-    const basisObservedAt = book.basisObservedAt;
-    const basisMaxObservationLagSeconds = book.basisMaxObservationLagMs === null
-      ? null
-      : book.basisMaxObservationLagMs / 1_000;
 
     book.totalQty = Math.max(0, totalBefore - event.tokenAmount);
     book.coveredQty = Math.max(0, book.coveredQty - coveredAmount);
@@ -375,8 +344,6 @@ function runLedger(events: readonly NormalizedTradeEvent[], since: number, until
       book.coveredQty = 0;
       book.coveredCostUsd = 0;
       book.acquiredAtWeightedMs = 0;
-      book.basisObservedAt = null;
-      book.basisMaxObservationLagMs = null;
     }
 
     if (event.eventTime < since || event.cashUsd === null) continue;
@@ -389,7 +356,6 @@ function runLedger(events: readonly NormalizedTradeEvent[], since: number, until
       userId: event.userId,
       userHandle: event.userHandle,
       eventTime: event.eventTime,
-      observedTime: event.observedTime,
       networkId: event.networkId,
       tokenAddress: event.tokenAddress,
       tokenKey: event.tokenKey,
@@ -402,8 +368,6 @@ function runLedger(events: readonly NormalizedTradeEvent[], since: number, until
       returnPct: pnlUsd / basisUsd,
       holdSecondsEstimate,
       basisOpenedAt,
-      basisObservedAt,
-      basisMaxObservationLagSeconds,
     });
   }
 
@@ -467,7 +431,7 @@ function userSwaps(dataset: ResearchDataset, userId: string): FomoSwap[] {
 }
 
 export function analyzeTrader(
-  user: StoredFomoUser,
+  user: ResearchUser,
   swaps: readonly FomoSwap[],
   window: AnalysisWindow,
   options: TraderMetricOptions = {},
@@ -476,11 +440,10 @@ export function analyzeTrader(
   const priorWins = options.bayesianPriorWins ?? 1;
   const priorLosses = options.bayesianPriorLosses ?? 1;
   const profitFactorCap = options.profitFactorCap ?? 10;
-  const copyableDelaySeconds = options.copyableDelaySeconds ?? 120;
   if (priorWins < 0 || priorLosses < 0 || priorWins + priorLosses <= 0) {
     throw new RangeError("Bayesian prior counts must be non-negative and non-zero in total");
   }
-  if (profitFactorCap <= 0 || copyableDelaySeconds < 0) throw new RangeError("Metric caps must be positive");
+  if (profitFactorCap <= 0) throw new RangeError("Metric caps must be positive");
 
   const events = normalizeSwaps(swaps);
   const inWindow = events.filter((event) => event.eventTime >= since && event.eventTime <= until);
@@ -517,9 +480,6 @@ export function analyzeTrader(
     ? [...basisByToken.values()].reduce((sum, basis) => sum + (basis / realizedBasisUsd) ** 2, 0)
     : 0;
   const pricedEvents = inWindow.filter((event) => event.cashUsd !== null);
-  const copyableEvents = pricedEvents.filter((event) =>
-    event.side !== "other" && event.copyDelaySeconds !== null && event.copyDelaySeconds <= copyableDelaySeconds
-  );
 
   return {
     user,
@@ -559,13 +519,12 @@ export function analyzeTrader(
       medianHoldSeconds: median(outcomes.flatMap((outcome) =>
         outcome.holdSecondsEstimate === null ? [] : [outcome.holdSecondsEstimate]
       )),
-      copyableRatio: pricedEvents.length > 0 ? copyableEvents.length / pricedEvents.length : 0,
     },
   };
 }
 
 export function computeTraderMetrics(
-  user: StoredFomoUser,
+  user: ResearchUser,
   swaps: readonly FomoSwap[],
   window: AnalysisWindow,
   options: TraderMetricOptions = {},
@@ -585,7 +544,7 @@ export function analyzeAllTraders(
     if (list) list.push(swap);
     else swapsByUser.set(id, [swap]);
   }
-  return dataset.users.map((user: StoredFomoUser) =>
+  return dataset.users.map((user: ResearchUser) =>
     analyzeTrader(user, swapsByUser.get(String(user.id)) ?? [], window, options)
   );
 }
@@ -614,15 +573,13 @@ export function rankTraders(
     outcomes: Math.log1p(metrics.profitFactorForRanking),
     consistency: (metrics.bayesianWinRate + metrics.positiveDayRatio) / 2,
     riskControl: 1 - metrics.maxDrawdownPct / 100 - metrics.concentrationHhi * 0.25,
-    copyability: metrics.copyableRatio,
   }));
-  const keys = ["efficiency", "outcomes", "consistency", "riskControl", "copyability"] as const;
+  const keys = ["efficiency", "outcomes", "consistency", "riskControl"] as const;
   const weights: Record<(typeof keys)[number], number> = {
-    efficiency: 0.25,
+    efficiency: 0.3,
     outcomes: 0.2,
-    consistency: 0.25,
+    consistency: 0.3,
     riskControl: 0.2,
-    copyability: 0.1,
   };
   const zByKey = Object.fromEntries(keys.map((key) => [
     key,
@@ -680,6 +637,6 @@ export function getTraderMetrics(
   window: AnalysisWindow,
   options: TraderMetricOptions = {},
 ): TraderMetrics | null {
-  const user = dataset.users.find((candidate: StoredFomoUser) => String(candidate.id) === userId);
+  const user = dataset.users.find((candidate: ResearchUser) => String(candidate.id) === userId);
   return user ? analyzeTrader(user, userSwaps(dataset, userId), window, options).metrics : null;
 }

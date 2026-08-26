@@ -11,8 +11,6 @@ type HelpDetail = {
 
 const COMMAND_GROUPS: Array<[string, Array<[string, string]>]> = [
   ["Monitor", [
-    ["scout", "Discover and evaluate visible Fomo traders"],
-    ["signals", "Research timely reliable-trader token flow"],
     ["alerts", "Read the signed-in account activity feed"],
     ["watch <@handle>", "Stream one followed profile to a webhook"],
     ["account", "Show the signed-in Fomo identity"],
@@ -26,25 +24,20 @@ const COMMAND_GROUPS: Array<[string, Array<[string, string]>]> = [
     ["clan <id | name>", "Inspect a clan, members, and top tokens"],
   ]],
   ["Research", [
-    ["analyze <target>", "Sync and analyze a username or linked wallet"],
-    ["sync <@handles...>", "Collect Fomo research data"],
-    ["rank", "Rank locally stored traders"],
-    ["show <@handle>", "Explain one stored trader"],
-    ["patterns", "Screen the strategy grid"],
-    ["validate", "Run walk-forward validation"],
+    ["analyze <target>", "Fetch and analyze a username or visible leaderboard wallet"],
+    ["scout", "Discover and evaluate visible Fomo traders"],
   ]],
   ["System", [
     ["login", "Authenticate with Fomo"],
-    ["status", "Inspect the local Fomo database"],
     ["help [command]", "Show overview or command help"],
   ]],
 ];
 
 const COMMON_JSON: Array<[string, string]> = [["--json", "Print machine-readable output"]];
 const DETAILS: Record<string, HelpDetail> = {
-  login: detail("Authenticate with Fomo and save credentials in macOS Keychain.", "fomo login", [], ["fomo login"]),
-  account: detail("Show the signed-in Fomo profile and login identity.", "fomo account [--json]", COMMON_JSON, ["fomo account --json"]),
-  alerts: detail("Read personalized Fomo trading activity.", "fomo alerts [options]", [
+  login: detail("Authenticate in an ephemeral browser and save credentials in macOS Keychain.", "fomo login", [], ["fomo login"]),
+  account: detail("Fetch the signed-in Fomo profile and login identity.", "fomo account [--json]", COMMON_JSON, ["fomo account --json"]),
+  alerts: detail("Fetch personalized Fomo trading activity.", "fomo alerts [options]", [
     ["--limit <n>", "Fetch 1-100 alerts"], ["--last-id <id>", "Continue after an alert"], ...COMMON_JSON,
   ], ["fomo alerts --limit 25"]),
   watch: {
@@ -55,48 +48,34 @@ const DETAILS: Record<string, HelpDetail> = {
     examples: ["fomo watch @alice --webhook https://example.com/fomo"],
     notes: ["Realtime uses the trading_activity WebSocket topic.", "Signed requests include X-Fomo-Signature."],
   },
-  scout: detail("Discover, refresh, and evaluate visible Fomo traders.", "fomo scout [options]", [
+  scout: detail("Discover, fetch, and retrospectively evaluate visible Fomo traders in memory.", "fomo scout [options]", [
     ["--max-traders <n>", "Discovery cap"], ["--max-pages <n>", "History page cap"],
-    ["--cached", "Use local data only"], ["--resume", "Skip completed traders"], ...COMMON_JSON,
+    ["--days <n>", "Research lookback"], ...COMMON_JSON,
   ], ["fomo scout --max-traders 200 --max-pages 10"]),
-  signals: detail("Research current reliable-trader token flow with market safety gates.", "fomo signals [options]", [
-    ["--window <duration>", "Current-flow window"], ["--min-traders <n>", "Independent buyers required"],
-    ["--chain <name>", "solana, ethereum, base, or bsc"], ...COMMON_JSON,
-  ], ["fomo signals --window 15m"]),
-  profile: detail("Export a sanitized public Fomo profile.", "fomo profile <@handle> --json", COMMON_JSON, ["fomo profile @alice --json"]),
-  leaderboard: detail("Rank Fomo traders over an official or custom window.", "fomo leaderboard [options]", [
+  profile: detail("Fetch a sanitized public Fomo profile.", "fomo profile <@handle> --json", COMMON_JSON, ["fomo profile @alice --json"]),
+  leaderboard: detail("Fetch Fomo trader rankings for an official or custom window.", "fomo leaderboard [options]", [
     ["--window <period>", "24h, 7d, 30d, all, or a duration"], ["--top <n>", "Rows to show"], ...COMMON_JSON,
   ], ["fomo leaderboard --window 24h --top 25"]),
-  wallets: detail("List wallets linked to ranked Fomo profiles.", "fomo wallets [options]", [
+  wallets: detail("Fetch wallets linked to ranked Fomo profiles.", "fomo wallets [options]", [
     ["--window <period>", "Leaderboard window"], ["--top <n>", "Profiles to inspect"], ...COMMON_JSON,
   ], ["fomo wallets --window 7d --top 50"]),
-  emails: detail("Find email addresses explicitly published in profile bios.", "fomo emails [options]", [
+  emails: detail("Fetch email addresses explicitly published in profile bios.", "fomo emails [options]", [
     ["--window <period>", "Leaderboard window"], ["--top <n>", "Profiles to inspect"], ...COMMON_JSON,
   ], ["fomo emails --window 24h --top 100"]),
-  clans: detail("Show Fomo's official clan leaderboard.", "fomo clans [options]", [
+  clans: detail("Fetch Fomo's official clan leaderboard.", "fomo clans [options]", [
     ["--window <period>", "24h, 7d, or 30d"], ["--top <n>", "Rows to show"], ...COMMON_JSON,
   ], ["fomo clans --window 30d"]),
-  clan: detail("Inspect one Fomo clan.", "fomo clan <id | name> [options]", [
+  clan: detail("Fetch one Fomo clan.", "fomo clan <id | name> [options]", [
     ["--window <period>", "24h, 7d, or 30d"], ["--top <n>", "Members and tokens to show"], ...COMMON_JSON,
   ], ["fomo clan \"Wizards\" --window 7d"]),
-  analyze: detail("Sync and analyze a Fomo username or linked wallet.", "fomo analyze <target> [options]", [
-    ["--days <n>", "Research lookback"], ["--max-pages <n>", "History page cap"], ["--cached", "Use local data only"], ...COMMON_JSON,
+  analyze: detail("Fetch fresh Fomo history and analyze it in memory.", "fomo analyze <target> [options]", [
+    ["--days <n>", "Research lookback"], ["--max-pages <n>", "History page cap"], ...COMMON_JSON,
   ], ["fomo analyze @alice --days 90"]),
-  sync: detail("Collect Fomo profiles, swaps, balances, and trades.", "fomo sync <@handles...> [options]", [
-    ["--file <path>", "Read additional handles"], ["--max-pages <n>", "History page cap"], ...COMMON_JSON,
-  ], ["fomo sync @alice @bob --max-pages 10"]),
-  rank: detail("Rank locally stored Fomo traders.", "fomo rank [options]", [["--days <n>", "Research lookback"], ["--top <n>", "Rows to show"], ...COMMON_JSON], ["fomo rank --days 90"]),
-  show: detail("Explain one locally measured Fomo trader.", "fomo show <@handle> [options]", [["--days <n>", "Research lookback"], ...COMMON_JSON], ["fomo show @alice"]),
-  patterns: detail("Screen strategy patterns over stored Fomo observations.", "fomo patterns [options]", [["--config <path>", "Pattern grid"], ["--top <n>", "Rows to show"], ...COMMON_JSON], ["fomo patterns --days 90"]),
-  validate: detail("Run observed-time walk-forward validation.", "fomo validate [options]", [["--folds <n>", "Validation folds"], ["--test-days <n>", "Days per fold"], ...COMMON_JSON], ["fomo validate --folds 4 --test-days 14"]),
-  status: detail("Show local Fomo database counts and sync status.", "fomo status [--json]", COMMON_JSON, ["fomo status"]),
 };
 
-const HELP_ALIASES: Record<string, string> = { db: "status", leaderboards: "leaderboard", user: "profile" };
+const HELP_ALIASES: Record<string, string> = { leaderboards: "leaderboard", user: "profile" };
 
-export function mainHelp(): string {
-  return overviewHelp();
-}
+export function mainHelp(): string { return overviewHelp(); }
 
 export function fomoHelp(topic?: string): string {
   if (!topic) return overviewHelp();
@@ -108,16 +87,16 @@ export function fomoHelp(topic?: string): string {
 
 function overviewHelp(): string {
   const output = [
-    banner("Fomo trader intelligence"),
-    `  ${dim("Read-only intelligence built exclusively around Fomo data.")}`,
+    banner("Fomo live trader intelligence"),
+    `  ${dim("Read-only Fomo data fetched fresh for each invocation.")}`,
     heading("Usage"), `  ${cyan("fomo <command> [options]")}`, `  ${cyan("fomo help <command>")}`,
   ];
   for (const [group, commands] of COMMAND_GROUPS) output.push(heading(group), ...rows(commands));
   output.push(
-    heading("Quick start"), example("fomo login"), example("fomo scout --max-traders 200"),
-    example("fomo signals --window 15m"), example("fomo analyze @alice --days 90"),
+    heading("Quick start"), example("fomo login"), example("fomo leaderboard --window 24h"),
+    example("fomo analyze @alice --days 90"), example("fomo scout --max-traders 25"),
     heading("Environment"), ...rows([["FOMO_WEBHOOK_URL", "Default watch webhook"], ["FOMO_WEBHOOK_SECRET", "Webhook signing secret"], ["NO_COLOR", "Disable ANSI styling"]]),
-    `\n  ${green("Read-only by design.")} ${dim("No trades or Fomo account mutations.")}`,
+    `\n  ${green("Read-only by design.")} ${dim("Only Keychain credentials persist; research data is discarded on exit.")}`,
     `  ${dim("Run fomo help <command> for focused help.")}\n`,
   );
   return output.join("\n");
@@ -136,14 +115,6 @@ function detail(summary: string, usage: string, options: Array<[string, string]>
   return { summary, usage, options, examples };
 }
 
-function heading(label: string): string {
-  return `\n${gold(bold(label.toUpperCase()))}`;
-}
-
-function rows(items: Array<[string, string]>): string[] {
-  return items.map(([name, description]) => `  ${cyan(name.padEnd(30))}${description}`);
-}
-
-function example(command: string): string {
-  return `  ${dim("$")} ${command}`;
-}
+function heading(label: string): string { return `\n${gold(bold(label.toUpperCase()))}`; }
+function rows(items: Array<[string, string]>): string[] { return items.map(([name, description]) => `  ${cyan(name.padEnd(30))}${description}`); }
+function example(command: string): string { return `  ${dim("$")} ${command}`; }

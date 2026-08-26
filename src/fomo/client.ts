@@ -14,7 +14,6 @@ import type {
   FomoRecentSwaps,
   FomoSwap,
   FomoSwapsPage,
-  FomoSyncResult,
   FomoUser,
   RawFomoPage,
 } from "./types.ts";
@@ -197,6 +196,7 @@ export class FomoClient {
   async allSwaps(user: FomoUser, maxPages = 100): Promise<FomoPaginatedResult<FomoSwap>> {
     validateMaxPages(maxPages);
     const items: FomoSwap[] = [];
+    const seenIds = new Set<string>();
     const pages: RawFomoPage[] = [];
     let cursor: string | undefined;
     let truncated = false;
@@ -208,11 +208,14 @@ export class FomoClient {
       const fetchedAt = new Date().toISOString();
       const response = await this.#transport.request(endpoint);
       const payload = parseSwapsPage(envelopeObject(response, endpoint), endpoint);
-      const observedAt = fetchedAt;
       const swaps = payload.swaps.map((swap, index) =>
-        parseSwap(swap, user, observedAt, `${endpoint} swap ${index}`),
+        parseSwap(swap, user, `${endpoint} swap ${index}`),
       );
-      items.push(...swaps);
+      for (const swap of swaps) {
+        if (seenIds.has(swap.id)) continue;
+        seenIds.add(swap.id);
+        items.push(swap);
+      }
       pages.push(rawPage(endpoint, pageNumber, cursor ?? null, fetchedAt, response));
 
       if (!payload.hasNextPage) break;
@@ -236,7 +239,7 @@ export class FomoClient {
     return {
       data: {
         items: payload.swaps.map((swap, index) =>
-          parseSwap(swap, user, fetchedAt, `${endpoint} swap ${index}`),
+          parseSwap(swap, user, `${endpoint} swap ${index}`),
         ),
         hasNextPage: payload.hasNextPage,
       },
@@ -292,49 +295,6 @@ export class FomoClient {
     }
 
     return { items, pages, truncated };
-  }
-
-  /** Fetch all profile research endpoints without invoking any mutation endpoint. */
-  async syncHandle(handle: string, options: { maxPages?: number } = {}): Promise<FomoSyncResult> {
-    const startedAt = new Date().toISOString();
-    const userResult = await this.resolveUser(handle);
-    const user = userResult.data;
-    const maxPages = options.maxPages ?? 100;
-    const swaps = await this.allSwaps(user, maxPages);
-    const [balances, spotlight, closedTrades] = await Promise.all([
-      this.balances(user),
-      this.spotlight(user),
-      this.closedTrades(user, { maxPages }),
-    ]);
-    const rawPageCount =
-      3 + swaps.pages.length + closedTrades.pages.length;
-
-    return {
-      user,
-      swaps: swaps.items,
-      raw: {
-        user: userResult.raw,
-        swaps: swaps.pages,
-        balances: balances.raw,
-        spotlight: spotlight.raw,
-        closedTrades: closedTrades.pages,
-      },
-      responses: {
-        balances: balances.data,
-        spotlight: spotlight.data,
-        closedTrades: closedTrades.items,
-      },
-      summary: {
-        handle: user.userHandle,
-        userId: user.id,
-        startedAt,
-        completedAt: new Date().toISOString(),
-        swapCount: swaps.items.length,
-        rawPageCount,
-        status: "completed",
-        truncated: swaps.truncated || closedTrades.truncated,
-      },
-    };
   }
 
   async #single(endpoint: string): Promise<FomoPageResult<unknown>> {
@@ -541,7 +501,6 @@ function pnlHistoryEndpoint(userId: string, since: Date): string {
 function parseSwap(
   value: unknown,
   user: FomoUser,
-  observedAt: string,
   context: string,
 ): FomoSwap {
   if (!isRecord(value)) throw new Error(`Fomo ${context} is not an object`);
@@ -554,7 +513,6 @@ function parseSwap(
     userId: optionalString(value.userId) ?? user.id,
     userHandle: optionalString(value.userHandle) ?? user.userHandle,
     createdAt,
-    observedAt,
     inNetworkId: identifierString(value.inNetworkId, `${context}.inNetworkId`),
     outNetworkId: identifierString(value.outNetworkId, `${context}.outNetworkId`),
     inTokenAddress: requiredString(value.inTokenAddress, `${context}.inTokenAddress`),
