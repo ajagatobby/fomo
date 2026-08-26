@@ -56,6 +56,22 @@ fomo watch <@handle> --webhook <https-url> [--interval 15s] [--json]
 
 `watch` uses the Fomo `trading_activity` WebSocket topic with polling recovery. The signed-in account must already follow the target. Set `FOMO_WEBHOOK_URL` for a default destination and `FOMO_WEBHOOK_SECRET` for HMAC-SHA256 request signatures.
 
+### Convergence
+
+```bash
+fomo hot
+fomo hot --window 30m --min-traders 4
+fomo hot --window 15m --clans --json
+```
+
+`hot` answers one question: which tokens are several ranked traders buying right now. It builds a pool from the `24h`, `7d`, `30d`, and `all` leaderboards, reads each trader's most recent swaps in one batched pass, and groups the buys that land inside `--window` by token.
+
+A buy is a swap out of a stablecoin or wrapped native asset into a token, so cross-chain entries count. Tokens are reported with their Fomo link, the distinct buyers, and the capital each committed. When nothing clears `--min-traders`, the closest activity is shown instead rather than an empty table.
+
+Short windows are genuinely sparse: a few hundred traders across every supported chain typically produce only a handful of buys in five minutes, so four traders converging inside that window is rare. Widen with `--window`, lower `--min-traders`, or add `--clans` to scan more of the ranked universe.
+
+Convergence is a description of what already happened, not an entry signal. Only Fomo-reported swaps are visible; accumulation off the platform is not.
+
 ### Profiles And Leaderboards
 
 ```bash
@@ -109,6 +125,7 @@ Redirected JSON files are user-created output and are not managed or retained by
 
 ```bash
 fomo --help
+fomo help hot
 fomo help analyze
 fomo help scout
 fomo help watch

@@ -251,6 +251,58 @@ export class FomoClient {
     return this.#single(`/v2/users/${encodeURIComponent(user.id)}/balances`);
   }
 
+  /**
+   * Fetches the newest swaps for many users in one batched pass. Users whose
+   * history cannot be read are reported as an empty list rather than failing
+   * the whole scan.
+   */
+  async recentSwapsMany(
+    users: readonly FomoUser[],
+    limit = 50,
+  ): Promise<Map<string, FomoSwap[]>> {
+    validateFeedLimit(limit);
+    const endpoints = users.map((user) =>
+      `/v2/users/${encodeURIComponent(user.id)}/swaps?limit=${limit}`
+    );
+    const responses = await this.#batch(endpoints);
+    const swapsByUser = new Map<string, FomoSwap[]>();
+    responses.forEach((response, index) => {
+      const user = users[index];
+      if (response === null) {
+        swapsByUser.set(user.id, []);
+        return;
+      }
+      try {
+        const payload = parseSwapsPage(envelopeObject(response, endpoints[index]), endpoints[index]);
+        swapsByUser.set(
+          user.id,
+          payload.swaps.map((swap, swapIndex) =>
+            parseSwap(swap, user, `${endpoints[index]} swap ${swapIndex}`)
+          ),
+        );
+      } catch {
+        swapsByUser.set(user.id, []);
+      }
+    });
+    return swapsByUser;
+  }
+
+  /**
+   * Fetches raw balance payloads for many users. Returned verbatim because the
+   * caller reads embedded token metadata that the typed layer discards.
+   */
+  async balancesMany(users: readonly FomoUser[]): Promise<Array<unknown | null>> {
+    return this.#batch(users.map((user) => `/v2/users/${encodeURIComponent(user.id)}/balances`));
+  }
+
+  async #batch(endpoints: string[]): Promise<Array<unknown | null>> {
+    if (endpoints.length === 0) return [];
+    if (this.#transport.requestMany) return this.#transport.requestMany(endpoints, 16);
+    return Promise.all(endpoints.map(async (endpoint) => {
+      try { return await this.#transport.request(endpoint); } catch { return null; }
+    }));
+  }
+
   async spotlight(user: FomoUser): Promise<FomoPageResult<unknown>> {
     return this.#single(`/v2/users/${encodeURIComponent(user.id)}/spotlight`);
   }

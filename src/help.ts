@@ -11,6 +11,7 @@ type HelpDetail = {
 
 const COMMAND_GROUPS: Array<[string, Array<[string, string]>]> = [
   ["Monitor", [
+    ["hot", "Find tokens several ranked traders are buying right now"],
     ["alerts", "Read the signed-in account activity feed"],
     ["watch <@handle>", "Stream one followed profile to a webhook"],
     ["account", "Show the signed-in Fomo identity"],
@@ -47,6 +48,30 @@ const DETAILS: Record<string, HelpDetail> = {
     environment: [["FOMO_WEBHOOK_URL", "Default destination"], ["FOMO_WEBHOOK_SECRET", "HMAC-SHA256 secret"]],
     examples: ["fomo watch @alice --webhook https://example.com/fomo"],
     notes: ["Realtime uses the trading_activity WebSocket topic.", "Signed requests include X-Fomo-Signature."],
+  },
+  hot: {
+    summary: "Scan ranked Fomo traders for tokens several of them are buying inside one short window.",
+    usage: "fomo hot [options]",
+    options: [
+      ["--window <30s..24h>", "Lookback, such as 5m or 30m"],
+      ["--min-traders <n>", "Distinct buyers required to report a token"],
+      ["--top <n>", "Rows to show"],
+      ["--pool <1-100>", "Traders per leaderboard window"],
+      ["--swaps <1-100>", "Recent swaps read per trader"],
+      ["--clans", "Widen the pool with top clan members"],
+      ["--max-clans <n>", "Clans inspected when --clans is set"],
+      ...COMMON_JSON,
+    ],
+    examples: [
+      "fomo hot",
+      "fomo hot --window 30m --min-traders 4",
+      "fomo hot --window 15m --clans --json",
+    ],
+    notes: [
+      "Buys are swaps out of a stablecoin or wrapped native asset into a token.",
+      "Only Fomo-reported swaps are visible; off-platform accumulation is not.",
+      "Crowding describes what already happened and is not an entry signal.",
+    ],
   },
   scout: detail("Discover, fetch, and retrospectively evaluate visible Fomo traders in memory.", "fomo scout [options]", [
     ["--max-traders <n>", "Discovery cap"], ["--max-pages <n>", "History page cap"],

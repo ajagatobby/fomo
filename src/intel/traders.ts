@@ -123,6 +123,8 @@ const SOLANA_NETWORKS = new Set(["1399811149", "sol", "solana", "mainnet-beta"])
 const ETHEREUM_NETWORKS = new Set(["1", "eth", "ethereum", "mainnet"]);
 const BASE_NETWORKS = new Set(["8453", "base", "base-mainnet"]);
 const BSC_NETWORKS = new Set(["56", "bsc", "bnb", "bnb-chain", "binance-smart-chain"]);
+const MONAD_NETWORKS = new Set(["143", "monad"]);
+const ROBINHOOD_NETWORKS = new Set(["4663", "robinhood", "robinhood-chain"]);
 
 const CASH_ADDRESSES: Readonly<Record<string, Readonly<Record<string, Exclude<CashKind, "noncash">>>>> = {
   solana: {
@@ -148,6 +150,12 @@ const CASH_ADDRESSES: Readonly<Record<string, Readonly<Record<string, Exclude<Ca
     "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": "stable",
     "0xe9e7cea3dedca5984780bafc599bd69add087d56": "stable",
     "0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3": "stable",
+  },
+  monad: {
+    "0x754704bc059f8c67012fed69bc8a327a5aafb603": "stable",
+  },
+  robinhood: {
+    "0x5fc5360d0400a0fd4f2af552add042d716f1d168": "stable",
   },
 };
 
@@ -175,6 +183,8 @@ function networkFamily(networkId: string | null | undefined): keyof typeof CASH_
   if (ETHEREUM_NETWORKS.has(value)) return "ethereum";
   if (BASE_NETWORKS.has(value)) return "base";
   if (BSC_NETWORKS.has(value)) return "bsc";
+  if (MONAD_NETWORKS.has(value)) return "monad";
+  if (ROBINHOOD_NETWORKS.has(value)) return "robinhood";
   return null;
 }
 

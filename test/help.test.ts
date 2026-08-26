@@ -31,6 +31,13 @@ test("focused help includes options, examples, and operational notes", () => {
   assert.match(output, /X-Fomo-Signature/);
 });
 
+test("convergence help documents its window and trader floor", () => {
+  const output = fomoHelp("hot");
+  assert.match(output, /--window <30s\.\.24h>/);
+  assert.match(output, /--min-traders <n>/);
+  assert.match(output, /not an entry signal/);
+});
+
 test("help aliases resolve to their canonical command", () => {
   assert.match(fomoHelp("leaderboards"), /fomo leaderboard/);
   assert.match(fomoHelp("user"), /fomo profile/);
@@ -42,6 +49,7 @@ test("CLI routes direct and flag help without authentication", () => {
   assert.match(cli("leaderboards", "--help"), /help · leaderboard/);
   assert.match(cli("analyze", "clan", "--help"), /help · clan/);
   assert.match(cli("scout", "--help"), /help · scout/);
+  assert.match(cli("hot", "--help"), /help · hot/);
   assert.match(cli("analyze", "--help"), /help · analyze/);
 });
 

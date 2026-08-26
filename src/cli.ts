@@ -8,6 +8,7 @@ const FOMO_COMMANDS = new Set([
   "account",
   "alerts",
   "watch",
+  "hot",
   "scout",
   "analyze",
   "profile",

@@ -7,3 +7,11 @@ profile.json
 *.md
 !README.md
 docs/
+
+# Agent tooling and local assistant config: never publish these.
+.claude/
+.claude/**
+CLAUDE.md
+AGENTS.md
+.mcp.json
+*.local.json

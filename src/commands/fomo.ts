@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { runHot } from "./hot.ts";
 import { runScout } from "./scout.ts";
 import { loginFomo, openFomoSession } from "../fomo/browser.ts";
 import { FomoClient, publicEmails, publicProfileResponse } from "../fomo/client.ts";
@@ -63,6 +64,9 @@ export async function runFomo(argv: string[]): Promise<void> {
       return;
     case "watch":
       await watchCommand(args);
+      return;
+    case "hot":
+      await runHot(args);
       return;
     case "scout":
       await runScout(args);
