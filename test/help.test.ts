@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -31,9 +31,15 @@ test("focused help includes options, examples, and operational notes", () => {
   assert.match(output, /X-Fomo-Signature/);
 });
 
+test("convergence help documents its window and trader floor", () => {
+  const output = fomoHelp("hot");
+  assert.match(output, /--window <30s\.\.24h>/);
+  assert.match(output, /--min-traders <n>/);
+  assert.match(output, /not an entry signal/);
+});
+
 test("help aliases resolve to their canonical command", () => {
   assert.match(fomoHelp("leaderboards"), /fomo leaderboard/);
-  assert.match(fomoHelp("db"), /fomo status/);
   assert.match(fomoHelp("user"), /fomo profile/);
 });
 
@@ -43,9 +49,18 @@ test("CLI routes direct and flag help without authentication", () => {
   assert.match(cli("leaderboards", "--help"), /help · leaderboard/);
   assert.match(cli("analyze", "clan", "--help"), /help · clan/);
   assert.match(cli("scout", "--help"), /help · scout/);
-  assert.match(cli("signals", "--help"), /help · signals/);
+  assert.match(cli("hot", "--help"), /help · hot/);
+  assert.match(cli("analyze", "--help"), /help · analyze/);
 });
 
 test("unknown help topics report the available discovery command", () => {
   assert.throws(() => fomoHelp("missing"), /Run fomo help/);
+});
+
+test("removed local-data commands are rejected", () => {
+  for (const command of ["signals", "sync", "rank", "show", "patterns", "validate", "status", "db"]) {
+    const result = spawnSync(process.execPath, ["src/cli.ts", command], { cwd: root, encoding: "utf8" });
+    assert.equal(result.status, 1, command);
+    assert.match(result.stderr, /Unknown command/, command);
+  }
 });

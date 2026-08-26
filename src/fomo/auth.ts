@@ -405,7 +405,7 @@ export async function openDirectFomoSession(
 ): Promise<FomoDirectSession> {
   const credentials = await loadFomoCredentials();
   if (!credentials) {
-    throw new Error("No cached Fomo session; run fomo login first");
+    throw new Error("No Fomo credentials in macOS Keychain; run fomo login first");
   }
   return new FomoDirectSession(credentials, options);
 }
@@ -422,7 +422,7 @@ export async function loadFomoCredentials(): Promise<FomoCredentials | null> {
     return validateCredentials(JSON.parse(output));
   } catch (error) {
     if (error instanceof SecurityCommandError && error.exitCode === 44) return null;
-    if (error instanceof SyntaxError) throw new Error("Cached Fomo session is invalid; run fomo login again");
+    if (error instanceof SyntaxError) throw new Error("Saved Fomo credentials are invalid; run fomo login again");
     throw error;
   }
 }
@@ -455,7 +455,7 @@ export function jwtExpirationMs(token: string): number {
 }
 
 function validateCredentials(value: unknown): FomoCredentials {
-  if (!isRecord(value) || value.version !== 1) throw new Error("Invalid cached Fomo session");
+  if (!isRecord(value) || value.version !== 1) throw new Error("Invalid Fomo credentials in macOS Keychain");
   return {
     version: 1,
     appToken: requiredString(value.appToken, "Fomo app token"),

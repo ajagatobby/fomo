@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
 import { runFomo } from "./commands/fomo.ts";
+import { removeLegacyLocalData } from "./fomo/cleanup.ts";
 import { mainHelp } from "./help.ts";
 
 const FOMO_COMMANDS = new Set([
   "account",
   "alerts",
   "watch",
+  "hot",
   "scout",
-  "signals",
   "analyze",
   "profile",
   "user",
@@ -18,17 +19,11 @@ const FOMO_COMMANDS = new Set([
   "leaderboards",
   "clans",
   "clan",
-  "sync",
-  "rank",
-  "show",
-  "patterns",
-  "validate",
-  "status",
-  "db",
   "login",
 ]);
 
 async function main(): Promise<void> {
+  removeLegacyLocalData();
   const argv = process.argv.slice(2);
   const command = argv[0];
   if (!command || command === "-h" || command === "--help") {

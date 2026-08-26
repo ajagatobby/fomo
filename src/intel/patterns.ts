@@ -10,7 +10,7 @@ import {
   type TraderRankingOptions,
 } from "./traders.ts";
 
-export const RETROSPECTIVE_LABEL = "retrospective-noncausal" as const;
+export const RETROSPECTIVE_LABEL = "retrospective" as const;
 
 export type PatternGrid = {
   lookbackDays: number[];
@@ -42,7 +42,7 @@ export type CopyPattern = {
 export type ExecutionAssumptions = {
   /** Total explicit fee charged across entry and exit. */
   roundTripFeeBps?: number;
-  /** Adverse return penalty per second of observation/execution delay. */
+  /** Hypothetical adverse return penalty per second of execution delay. */
   delayHaircutBpsPerSecond?: number;
 };
 
@@ -74,52 +74,6 @@ export type PatternScreenResult = {
   patternsTested: number;
   window: { since: number; until: number };
   results: ScreenedPattern[];
-};
-
-export type WalkForwardFold = {
-  index: number;
-  cutoff: number;
-  testUntil: number;
-};
-
-export type PatternFoldResult = PatternSimulation & {
-  foldIndex: number;
-  cutoff: number;
-  testUntil: number;
-  selectedTraderIds: string[];
-};
-
-export type ValidatedPattern = {
-  pattern: CopyPattern;
-  netPnlUsd: number;
-  returnPct: number;
-  maxDrawdownPct: number;
-  positiveFoldRatio: number;
-  worstFoldReturnPct: number;
-  foldCount: number;
-  tradeCount: number;
-  folds: PatternFoldResult[];
-};
-
-export type PatternValidationOptions = ExecutionAssumptions & {
-  window: AnalysisWindow;
-  grid?: PatternGridInput | string;
-  maxGridCells?: number;
-  foldCount?: number;
-  testDays?: number;
-  folds?: readonly Omit<WalkForwardFold, "index">[];
-  ranking?: TraderRankingOptions;
-  /** Defaults to true. False is exploratory and may include historically backfilled data. */
-  causal?: boolean;
-  maxObservationLagSeconds?: number;
-};
-
-export type PatternValidationResult = {
-  label: "walk-forward-causal" | "walk-forward-retrospective";
-  patternsTested: number;
-  folds: WalkForwardFold[];
-  window: { since: number; until: number };
-  results: ValidatedPattern[];
 };
 
 const DAY_MS = 86_400_000;
@@ -426,172 +380,4 @@ export function screenPatterns(dataset: ResearchDataset, options: PatternScreenO
     };
   });
   return { label: RETROSPECTIVE_LABEL, patternsTested: patterns.length, window, results };
-}
-
-function buildFolds(options: PatternValidationOptions, since: number, until: number): WalkForwardFold[] {
-  if (options.folds) {
-    const folds = options.folds.map((fold, index) => ({
-      index,
-      cutoff: fold.cutoff,
-      testUntil: fold.testUntil,
-    })).sort((a, b) => a.cutoff - b.cutoff || a.testUntil - b.testUntil)
-      .map((fold, index) => ({ ...fold, index }));
-    for (const fold of folds) {
-      if (!Number.isFinite(fold.cutoff) || !Number.isFinite(fold.testUntil)
-        || fold.cutoff < since || fold.testUntil > until || fold.cutoff >= fold.testUntil) {
-        throw new RangeError("Explicit folds must lie inside the validation window and have cutoff < testUntil");
-      }
-    }
-    return folds;
-  }
-
-  const foldCount = options.foldCount ?? 4;
-  const testDays = options.testDays ?? 14;
-  if (!Number.isInteger(foldCount) || foldCount <= 0) throw new RangeError("foldCount must be a positive integer");
-  if (!Number.isInteger(testDays) || testDays <= 0) throw new RangeError("testDays must be a positive integer");
-  const testMs = testDays * DAY_MS;
-  if (until - foldCount * testMs < since) throw new RangeError("Validation window is too short for the requested folds");
-  return Array.from({ length: foldCount }, (_, index) => {
-    const cutoff = until - (foldCount - index) * testMs;
-    return { index, cutoff, testUntil: cutoff + testMs };
-  });
-}
-
-type FoldContext = {
-  fold: WalkForwardFold;
-  rankingByLookback: Map<number, RankedTrader[]>;
-  testOutcomesByUser: Map<string, RealizedOutcome[]>;
-};
-
-function validationContexts(
-  dataset: ResearchDataset,
-  patterns: readonly CopyPattern[],
-  folds: readonly WalkForwardFold[],
-  since: number,
-  rankingOptions: TraderRankingOptions | undefined,
-  causal: boolean,
-  maxObservationLagSeconds: number,
-): FoldContext[] {
-  const lookbacks = new Set(patterns.map((pattern) => pattern.lookbackDays));
-  return folds.map((fold) => {
-    const trainingDataset = causal ? availableDataset(dataset, fold.cutoff) : dataset;
-    const testDataset = causal ? availableDataset(dataset, fold.testUntil) : dataset;
-    const rankingByLookback = new Map<number, RankedTrader[]>();
-    for (const lookbackDays of lookbacks) {
-      rankingByLookback.set(lookbackDays, rankTraders(trainingDataset, {
-        since: Math.max(since, fold.cutoff - lookbackDays * DAY_MS),
-        until: fold.cutoff,
-      }, broadRankingOptions(rankingOptions)));
-    }
-    const analyses = analyzeAllTraders(testDataset, { since, until: fold.testUntil }, rankingOptions);
-    const testOutcomesByUser = new Map<string, RealizedOutcome[]>();
-    for (const analysis of analyses) {
-      // Requiring the whole average-cost pool to open after cutoff rejects crossing positions.
-      testOutcomesByUser.set(analysis.metrics.userId, analysis.outcomes.filter((outcome) =>
-        outcome.eventTime > fold.cutoff
-        && outcome.eventTime <= fold.testUntil
-        && outcome.basisOpenedAt > fold.cutoff
-        && (!causal || (
-          outcome.basisObservedAt !== null
-          && outcome.basisObservedAt <= outcome.eventTime
-          && outcome.basisMaxObservationLagSeconds !== null
-          && outcome.basisMaxObservationLagSeconds <= maxObservationLagSeconds
-          && outcome.observedTime !== null
-          && outcome.observedTime <= fold.testUntil
-          && outcome.observedTime - outcome.eventTime <= maxObservationLagSeconds * 1_000
-        ))
-      ));
-    }
-    return { fold, rankingByLookback, testOutcomesByUser };
-  });
-}
-
-function availableDataset(dataset: ResearchDataset, cutoff: number): ResearchDataset {
-  const users = dataset.users.filter((user) => Date.parse(user.firstObservedAt) <= cutoff);
-  const userIds = new Set(users.map((user) => user.id));
-  const swaps = dataset.swaps.filter((swap) =>
-    userIds.has(swap.userId) && Date.parse(swap.observedAt) <= cutoff
-  );
-  return { users, swaps };
-}
-
-export function validatePatterns(dataset: ResearchDataset, options: PatternValidationOptions): PatternValidationResult {
-  const window = normalizeWindow(options.window);
-  const patterns = generatePatternGrid(options.grid ?? {}, options.maxGridCells ?? DEFAULT_MAX_GRID_CELLS);
-  executionValues(options);
-  const causal = options.causal ?? true;
-  const maxObservationLagSeconds = options.maxObservationLagSeconds ?? 300;
-  if (!Number.isFinite(maxObservationLagSeconds) || maxObservationLagSeconds < 0) {
-    throw new RangeError("maxObservationLagSeconds must be non-negative");
-  }
-  const folds = buildFolds(options, window.since, window.until);
-  const contexts = validationContexts(
-    dataset,
-    patterns,
-    folds,
-    window.since,
-    options.ranking,
-    causal,
-    maxObservationLagSeconds,
-  );
-  const foldSelectionCache = new Map<string, { ids: string[]; outcomes: RealizedOutcome[] }>();
-  const foldSimulationCache = new Map<string, PatternSimulation>();
-
-  const results = patterns.map((pattern): ValidatedPattern => {
-    const foldResults: PatternFoldResult[] = contexts.map((context) => {
-      const selectionCacheKey = `${context.fold.index}|${selectionKey(pattern)}`;
-      let selection = foldSelectionCache.get(selectionCacheKey);
-      if (!selection) {
-        const traders = selectTraders(context.rankingByLookback.get(pattern.lookbackDays) ?? [], pattern);
-        const ids = traders.map((trader) => trader.analysis.metrics.userId);
-        const outcomes = ids.flatMap((id) => context.testOutcomesByUser.get(id) ?? []);
-        selection = { ids, outcomes };
-        foldSelectionCache.set(selectionCacheKey, selection);
-      }
-      const simulationCacheKey = `${context.fold.index}|${economicKey(pattern)}`;
-      let unitSimulation = foldSimulationCache.get(simulationCacheKey);
-      if (!unitSimulation) {
-        unitSimulation = simulateRetrospectiveCopies(selection.outcomes, { ...pattern, positionUsd: 1 }, options);
-        foldSimulationCache.set(simulationCacheKey, unitSimulation);
-      }
-      return {
-        foldIndex: context.fold.index,
-        cutoff: context.fold.cutoff,
-        testUntil: context.fold.testUntil,
-        selectedTraderIds: selection.ids,
-        ...unitSimulation,
-        grossPnlUsd: unitSimulation.grossPnlUsd * pattern.positionUsd,
-        executionCostUsd: unitSimulation.executionCostUsd * pattern.positionUsd,
-        delayHaircutUsd: unitSimulation.delayHaircutUsd * pattern.positionUsd,
-        netPnlUsd: unitSimulation.netPnlUsd * pattern.positionUsd,
-      };
-    });
-    const netPnlUsd = foldResults.reduce((sum, fold) => sum + fold.netPnlUsd, 0);
-    const tradeCount = foldResults.reduce((sum, fold) => sum + fold.tradeCount, 0);
-    const positiveFolds = foldResults.filter((fold) => fold.netPnlUsd > 0).length;
-    const aggregateTrades = contexts.flatMap((context, index) => {
-      const selection = foldSelectionCache.get(`${context.fold.index}|${selectionKey(pattern)}`);
-      return simulatedTrades(selection?.outcomes ?? [], pattern, options).map((trade) => ({ ...trade, foldIndex: index }));
-    }).sort((a, b) => a.eventTime - b.eventTime || a.foldIndex - b.foldIndex);
-    const aggregate = summarizeTrades(aggregateTrades, pattern.positionUsd);
-    return {
-      pattern,
-      netPnlUsd,
-      returnPct: tradeCount > 0 ? netPnlUsd / (pattern.positionUsd * tradeCount) : 0,
-      maxDrawdownPct: aggregate.maxDrawdownPct,
-      positiveFoldRatio: foldResults.length > 0 ? positiveFolds / foldResults.length : 0,
-      worstFoldReturnPct: foldResults.length > 0 ? Math.min(...foldResults.map((fold) => fold.returnPct)) : 0,
-      foldCount: foldResults.length,
-      tradeCount,
-      folds: foldResults,
-    };
-  });
-
-  return {
-    label: causal ? "walk-forward-causal" : "walk-forward-retrospective",
-    patternsTested: patterns.length,
-    folds,
-    window,
-    results,
-  };
 }

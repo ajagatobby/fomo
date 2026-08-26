@@ -1,7 +1,7 @@
 {
   "name": "fomo",
   "version": "0.2.0",
-  "description": "Read-only Fomo trader, wallet, clan, and strategy intelligence CLI",
+  "description": "Live, read-only Fomo trader, wallet, clan, and activity intelligence CLI",
   "type": "module",
   "private": true,
   "bin": {

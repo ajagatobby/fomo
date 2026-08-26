@@ -27,16 +27,6 @@ export type FomoAccount = {
   fetchedAt: string;
 };
 
-export type StoredFomoAccount = {
-  userId: string;
-  userHandle: string;
-  displayName: string | null;
-  privyUserId: string;
-  email: string;
-  loginMethod: FomoLoginMethod;
-  fetchedAt: string;
-};
-
 export type FomoLeaderboardWindow = "24h" | "7d" | "30d" | "all";
 
 export type FomoLeaderboardEntry = {
@@ -111,7 +101,6 @@ export type FomoSwap = {
   userId: string;
   userHandle: string;
   createdAt: string;
-  observedAt: string;
   inNetworkId: string;
   outNetworkId: string;
   inTokenAddress: string;
@@ -124,21 +113,7 @@ export type FomoSwap = {
   humanUsdAmountOut: string | null;
 };
 
-export type FomoSyncState = "running" | "completed" | "failed";
-
-export type FomoSyncSummary = {
-  handle: string;
-  userId: string | null;
-  startedAt: string;
-  completedAt: string | null;
-  swapCount: number;
-  rawPageCount: number;
-  status: FomoSyncState;
-  truncated?: boolean;
-  error?: string;
-};
-
-export type StoredFomoUser = {
+export type ResearchUser = {
   id: string;
   userHandle: string;
   /** Convenience alias for research/analytics consumers. */
@@ -148,12 +123,10 @@ export type StoredFomoUser = {
   clanName: string | null;
   address: string | null;
   evmAddress: string | null;
-  firstObservedAt: string;
-  syncedAt: string;
 };
 
 export type ResearchDataset = {
-  users: StoredFomoUser[];
+  users: ResearchUser[];
   swaps: FomoSwap[];
 };
 
@@ -181,7 +154,7 @@ export type FomoClosedTradesPage = {
   closedCount?: number;
 };
 
-/** An exact endpoint response retained for reproducible research. */
+/** Endpoint response metadata available only for the current invocation. */
 export type RawFomoPage = {
   endpoint: string;
   pageNumber: number;
@@ -199,30 +172,4 @@ export type FomoPaginatedResult<T> = {
   items: T[];
   pages: RawFomoPage[];
   truncated: boolean;
-};
-
-export type FomoSyncResult = {
-  user: FomoUser;
-  swaps: FomoSwap[];
-  raw: {
-    user: RawFomoPage;
-    swaps: RawFomoPage[];
-    balances: RawFomoPage;
-    spotlight: RawFomoPage;
-    closedTrades: RawFomoPage[];
-  };
-  responses: {
-    balances: unknown;
-    spotlight: unknown;
-    closedTrades: Record<string, unknown>[];
-  };
-  summary: FomoSyncSummary;
-};
-
-export type FomoStoreStatus = {
-  databasePath: string;
-  users: number;
-  swaps: number;
-  rawPages: number;
-  lastSync: FomoSyncSummary | null;
 };

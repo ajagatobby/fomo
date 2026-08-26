@@ -1,8 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   FomoDirectSession,
@@ -16,7 +12,6 @@ import {
   publicProfileResponse,
   type FomoJsonTransport,
 } from "../src/fomo/client.ts";
-import { FomoStore } from "../src/fomo/store.ts";
 import { postWebhook, webhookSignature, type FomoWatchWebhookPayload } from "../src/fomo/webhook.ts";
 import type { FomoSwap, FomoUser } from "../src/fomo/types.ts";
 
@@ -211,6 +206,27 @@ test("Fomo client marks swap history truncated at the page cap", async () => {
   assert.equal(result.truncated, true);
 });
 
+test("Fomo client deduplicates overlapping swap pages", async () => {
+  let page = 0;
+  const client = new FomoClient({
+    async request<T>(): Promise<T> {
+      page++;
+      return {
+        success: true,
+        statusCode: 200,
+        responseObject: {
+          swaps: page === 1 ? [rawSwap("swap-1")] : [rawSwap("swap-1"), rawSwap("swap-2")],
+          hasNextPage: page === 1,
+        },
+      } as T;
+    },
+  });
+
+  const result = await client.allSwaps(user, 3);
+
+  assert.deepEqual(result.items.map((swap) => swap.id), ["swap-1", "swap-2"]);
+});
+
 test("Fomo client parses official trader and clan leaderboards", async () => {
   const transport: FomoJsonTransport = {
     async request<T>(requestPath: string): Promise<T> {
@@ -282,123 +298,6 @@ test("Fomo client keeps partial custom-window histories when a batch item fails"
   assert.equal(histories.size, 1);
   assert.equal(histories.has("user-1"), true);
   assert.equal(histories.has("user-2"), false);
-});
-
-test("Fomo store deduplicates swaps and preserves first observation", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "fomo-test-"));
-  const database = path.join(directory, "research.sqlite");
-  const store = new FomoStore(database);
-  try {
-    store.saveUser(user, "2026-01-01T00:00:00.000Z");
-    const swap: FomoSwap = {
-      id: "swap-1", userId: user.id, userHandle: user.userHandle,
-      createdAt: "2026-01-02T00:00:00.000Z", observedAt: "2026-01-02T00:00:05.000Z",
-      inNetworkId: "8453", outNetworkId: "8453",
-      inTokenAddress: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", outTokenAddress: "0xtoken",
-      inTradeId: null, outTradeId: null, inHumanAmount: "10", outHumanAmount: "100",
-      humanUsdAmountIn: "10", humanUsdAmountOut: null,
-    };
-    store.saveSwaps([swap]);
-    store.saveSwaps([{ ...swap, observedAt: "2026-01-03T00:00:00.000Z" }]);
-    const dataset = store.dataset();
-    assert.equal(dataset.users.length, 1);
-    assert.equal(dataset.swaps.length, 1);
-    assert.equal(dataset.swaps[0].observedAt, "2026-01-02T00:00:05.000Z");
-  } finally {
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("Fomo store replaces the singleton current account without retaining raw auth data", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "fomo-test-"));
-  const database = path.join(directory, "research.sqlite");
-  const store = new FomoStore(database);
-  try {
-    store.saveCurrentAccount({
-      user,
-      login: { privyUserId: "privy-1", email: "alpha@example.com", method: "google" },
-      fetchedAt: "2026-01-01T00:00:00.000Z",
-    });
-    store.saveCurrentAccount({
-      user: { ...user, id: "user-2", userHandle: "beta", displayName: "Beta" },
-      login: { privyUserId: "privy-2", email: "beta@example.com", method: "apple" },
-      fetchedAt: "2026-01-02T00:00:00.000Z",
-    });
-    assert.deepEqual(store.currentAccount(), {
-      userId: "user-2",
-      userHandle: "beta",
-      displayName: "Beta",
-      privyUserId: "privy-2",
-      email: "beta@example.com",
-      loginMethod: "apple",
-      fetchedAt: "2026-01-02T00:00:00.000Z",
-    });
-  } finally {
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("Fomo store migrates a version 2 database for current accounts", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "fomo-test-"));
-  const database = path.join(directory, "research.sqlite");
-  const legacy = new DatabaseSync(database);
-  legacy.exec(`
-    CREATE TABLE users (
-      id TEXT PRIMARY KEY, user_handle TEXT NOT NULL COLLATE NOCASE UNIQUE,
-      display_name TEXT, clan_id TEXT, clan_name TEXT, solana_address TEXT,
-      evm_address TEXT, synced_at TEXT NOT NULL, raw_json TEXT NOT NULL
-    );
-    CREATE TABLE sync_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, handle TEXT NOT NULL, user_id TEXT,
-      started_at TEXT NOT NULL, completed_at TEXT, status TEXT NOT NULL,
-      swaps_saved INTEGER NOT NULL DEFAULT 0, raw_pages_saved INTEGER NOT NULL DEFAULT 0,
-      error TEXT
-    );
-    PRAGMA user_version = 2;
-  `);
-  legacy.close();
-  const store = new FomoStore(database);
-  try {
-    assert.equal(store.currentAccount(), null);
-  } finally {
-    store.close();
-  }
-  const migrated = new DatabaseSync(database);
-  try {
-    const version = migrated.prepare("PRAGMA user_version").get() as { user_version: number };
-    assert.equal(version.user_version, 4);
-  } finally {
-    migrated.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("Fomo store preserves first profile observation and sync truncation", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "fomo-test-"));
-  const database = path.join(directory, "research.sqlite");
-  const store = new FomoStore(database);
-  try {
-    store.saveUser(user, "2026-01-01T00:00:00.000Z");
-    store.saveUser({ ...user, displayName: "Alpha Updated" }, "2026-02-01T00:00:00.000Z");
-    const stored = store.dataset().users[0];
-    assert.equal(stored.firstObservedAt, "2026-01-01T00:00:00.000Z");
-    assert.equal(stored.syncedAt, "2026-02-01T00:00:00.000Z");
-    const runId = store.beginSync(user.userHandle);
-    const summary = store.completeSync(runId, { userId: user.id, truncated: true });
-    assert.equal(summary.truncated, true);
-    assert.equal(store.status().lastSync?.truncated, true);
-    assert.deepEqual([...store.incompleteUserIds()], [user.id]);
-    assert.deepEqual([...store.completedUserIds()], []);
-    const resumedRun = store.beginSync(user.userHandle);
-    store.completeSync(resumedRun, { userId: user.id, truncated: false });
-    assert.deepEqual([...store.incompleteUserIds()], []);
-    assert.deepEqual([...store.completedUserIds()], [user.id]);
-  } finally {
-    store.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
 });
 
 test("Fomo session refreshes an expired app token before API requests", async () => {
@@ -556,7 +455,6 @@ test("Fomo watcher signs and retries webhook deliveries", async () => {
     userId: "user-1",
     userHandle: "alpha",
     createdAt: "2026-01-01T00:00:00.000Z",
-    observedAt: "2026-01-01T00:00:01.000Z",
     inNetworkId: "8453",
     outNetworkId: "8453",
     inTokenAddress: "0xusdc",
@@ -572,7 +470,7 @@ test("Fomo watcher signs and retries webhook deliveries", async () => {
     version: 1,
     event: "fomo.swap",
     occurredAt: swap.createdAt,
-    deliveredAt: swap.observedAt,
+    deliveredAt: "2026-01-01T00:00:01.000Z",
     profile: { id: user.id, userHandle: user.userHandle, displayName: user.displayName },
     swap,
   };

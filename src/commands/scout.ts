@@ -2,59 +2,22 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { openFomoSession } from "../fomo/browser.ts";
 import { FomoClient } from "../fomo/client.ts";
-import { FomoStore } from "../fomo/store.ts";
 import { pacedTransport } from "../fomo/rate-limit.ts";
-import type {
-  FomoClanWindow,
-  FomoSyncSummary,
-  FomoUser,
-  RawFomoPage,
-  StoredFomoUser,
-} from "../fomo/types.ts";
+import type { FomoClanWindow, FomoUser, ResearchDataset, ResearchUser } from "../fomo/types.ts";
 import {
   addScoutCandidate,
   recommendScoutTraders,
   selectScoutCandidates,
   selectScoutPolicy,
   type ScoutCandidate,
-  type ScoutPolicy,
   type ScoutRecommendation,
   type ScoutRecommendationState,
 } from "../intel/scout.ts";
-import { screenPatterns, validatePatterns, type PatternGridInput } from "../intel/patterns.ts";
+import { screenPatterns, type PatternGridInput } from "../intel/patterns.ts";
 import { rankTraders } from "../intel/traders.ts";
 import { banner, dim, gold, green, red, table } from "../ui/index.ts";
 
 const DAY_MS = 86_400_000;
-
-type ScoutSyncResult = {
-  candidate: ScoutCandidate;
-  summary: FomoSyncSummary | null;
-  error: string | null;
-};
-
-type ScoutReport = {
-  generatedAt: string;
-  mode: "cached" | "discover-and-refresh";
-  window: { since: string; until: string };
-  universe: {
-    discovered: number;
-    selected: number;
-    analyzed: number;
-    sources: Record<string, number>;
-    discoveryErrors: string[];
-    syncCompleted: number;
-    syncFailed: number;
-    syncTruncated: number;
-    syncSkipped: number;
-  };
-  states: Record<ScoutRecommendationState, number>;
-  policy: ScoutPolicy | null;
-  interestingStats: Array<{ label: string; trader: string; value: string }>;
-  recommendations: ReturnType<typeof recommendationJson>[];
-  syncFailures: Array<{ userHandle: string; error: string }>;
-  limitations: string[];
-};
 
 export async function runScout(args: string[]): Promise<void> {
   const { values } = parseArgs({
@@ -72,11 +35,6 @@ export async function runScout(args: string[]): Promise<void> {
       config: { type: "string" },
       "max-patterns": { type: "string", default: "100000" },
       "fee-bps": { type: "string", default: "20" },
-      folds: { type: "string", default: "4" },
-      "test-days": { type: "string", default: "14" },
-      "max-lag": { type: "string", default: "300" },
-      cached: { type: "boolean", default: false },
-      resume: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
   });
@@ -91,120 +49,90 @@ export async function runScout(args: string[]): Promise<void> {
   const minClosed = positiveInteger(values["min-closed"], "--min-closed");
   const coverage = ratio(values.coverage, "--coverage");
   const minReliability = ratio(values["min-reliability"], "--min-reliability");
-  const foldCount = positiveInteger(values.folds, "--folds");
-  const testDays = positiveInteger(values["test-days"], "--test-days");
-  const maxLag = nonNegativeNumber(values["max-lag"], "--max-lag");
   const maxPatterns = positiveInteger(values["max-patterns"], "--max-patterns");
   const feeBps = nonNegativeNumber(values["fee-bps"], "--fee-bps");
-  if (days < foldCount * testDays) {
-    throw new Error("--days must cover at least --folds multiplied by --test-days");
-  }
 
-  const store = new FomoStore();
-  let session: Awaited<ReturnType<typeof openFomoSession>> | null = null;
+  const session = await openFomoSession();
   try {
+    const client = new FomoClient(pacedTransport(session, { requestsPerSecond }));
     const candidates = new Map<string, ScoutCandidate>();
-    for (const user of store.dataset().users) addScoutCandidate(candidates, storedAsFomoUser(user), "local");
     const discoveryErrors: string[] = [];
-    let selected: ScoutCandidate[];
-    let syncResults: ScoutSyncResult[] = [];
+    if (!values.json) console.log(banner("live Fomo trader discovery"));
+    await discoverUniverse(client, candidates, discoveryErrors, Boolean(values.json), concurrency);
+    const selected = selectScoutCandidates(candidates.values(), maxTraders);
+    if (!selected.length) throw new Error("Fomo discovery returned no traders");
+    if (!values.json) console.log(dim(
+      `\n  Fetching fresh history for ${selected.length}/${candidates.size} traders at ${requestsPerSecond}/s with concurrency ${concurrency}.\n`,
+    ));
 
-    if (values.cached) {
-      selected = selectScoutCandidates(candidates.values(), maxTraders);
-    } else {
-      session = await openFomoSession();
-      const client = new FomoClient(pacedTransport(session, { requestsPerSecond }));
-      if (!values.json) console.log(banner("autonomous Fomo trader discovery"));
-      await discoverUniverse(client, candidates, discoveryErrors, Boolean(values.json), concurrency);
-      selected = selectScoutCandidates(candidates.values(), maxTraders);
-      const completedIds = values.resume ? store.completedUserIds() : new Set<string>();
-      const refreshCandidates = selected.filter((candidate) => !completedIds.has(candidate.user.id));
-      if (!values.json) console.log(dim(
-        `\n  Selected ${selected.length}/${candidates.size} traders; refreshing ${refreshCandidates.length}`
-        + ` at ${requestsPerSecond}/s with concurrency ${concurrency}`
-        + `${values.resume ? `; resuming past ${selected.length - refreshCandidates.length} complete` : ""}.\n`,
-      ));
-      let finished = 0;
-      syncResults = await mapConcurrent(refreshCandidates, concurrency, async (candidate) => {
-        try {
-          const summary = await syncCandidate(client, store, candidate, maxPages);
-          finished++;
-          if (!values.json) progress("SYNC", finished, refreshCandidates.length, candidate.user.userHandle);
-          return { candidate, summary, error: null };
-        } catch (error) {
-          finished++;
-          const message = error instanceof Error ? error.message : String(error);
-          if (!values.json) progress("FAIL", finished, refreshCandidates.length, candidate.user.userHandle, message);
-          return { candidate, summary: null, error: message };
-        }
-      });
-      if (!values.json) console.log("\n");
-    }
+    let finished = 0;
+    const fetched = await mapConcurrent(selected, concurrency, async (candidate) => {
+      try {
+        const profile = (await client.resolveUser(candidate.user.userHandle)).data;
+        const swaps = await client.allSwaps(profile, maxPages);
+        finished++;
+        if (!values.json) progress("FETCH", finished, selected.length, profile.userHandle);
+        return { candidate, profile, swaps: swaps.items, truncated: swaps.truncated, error: null };
+      } catch (error) {
+        finished++;
+        const message = error instanceof Error ? error.message : String(error);
+        if (!values.json) progress("FAIL", finished, selected.length, candidate.user.userHandle, message);
+        return { candidate, profile: null, swaps: [], truncated: false, error: message };
+      }
+    });
+    if (!values.json) console.log("\n");
 
-    if (selected.length === 0) {
-      throw new Error(values.cached
-        ? "No locally stored traders. Run fomo scout without --cached first."
-        : "Fomo discovery returned no traders.");
-    }
-    const dataset = store.dataset(selected.map((candidate) => candidate.user.userHandle));
-    if (dataset.swaps.length === 0) throw new Error("No swap history is available for the selected traders");
+    const successful = fetched.filter((item): item is typeof item & { profile: FomoUser } => item.profile !== null);
+    const dataset: ResearchDataset = {
+      users: successful.map((item) => researchUser(item.profile)),
+      swaps: successful.flatMap((item) => item.swaps),
+    };
+    if (!dataset.swaps.length) throw new Error("Fresh Fomo fetch returned no swap history for selected traders");
     const until = Date.now();
     const window = { since: until - days * DAY_MS, until };
     const rankingOptions = { minClosed, minBasisCoverage: coverage };
     const rankings = rankTraders(dataset, window, rankingOptions);
-    const incompleteIds = store.incompleteUserIds();
-    for (const result of syncResults) {
-      if (result.error || result.summary?.truncated) incompleteIds.add(result.candidate.user.id);
-    }
+    const incompleteIds = new Set(fetched.filter((item) => item.error || item.truncated).map((item) => item.candidate.user.id));
     const recommendations = sortRecommendations(recommendScoutTraders(rankings, incompleteIds, minReliability));
-    const policyDataset = {
+    const completeDataset = {
       users: dataset.users.filter((user) => !incompleteIds.has(user.id)),
       swaps: dataset.swaps.filter((swap) => !incompleteIds.has(swap.userId)),
     };
-    const patternOptions = {
+    const screened = screenPatterns(completeDataset, {
       window,
       grid: readGrid(values.config),
       maxGridCells: maxPatterns,
       roundTripFeeBps: feeBps,
       ranking: rankingOptions,
-    };
-    const screened = screenPatterns(policyDataset, patternOptions);
-    const validated = validatePatterns(policyDataset, {
-      ...patternOptions,
-      foldCount,
-      testDays,
-      maxObservationLagSeconds: maxLag,
     });
-    const policy = selectScoutPolicy(screened.results, validated.results);
-    const report: ScoutReport = {
+    const policy = selectScoutPolicy(screened.results);
+    const report = {
       generatedAt: new Date().toISOString(),
-      mode: values.cached ? "cached" : "discover-and-refresh",
+      mode: "fresh-retrospective" as const,
       window: { since: new Date(window.since).toISOString(), until: new Date(window.until).toISOString() },
       universe: {
         discovered: candidates.size,
         selected: selected.length,
         analyzed: rankings.length,
-        sources: sourceCounts(selected),
         discoveryErrors,
-        syncCompleted: syncResults.filter((result) => result.summary).length,
-        syncFailed: syncResults.filter((result) => result.error).length,
-        syncTruncated: syncResults.filter((result) => result.summary?.truncated).length,
-        syncSkipped: !values.cached && values.resume ? selected.length - syncResults.length : 0,
+        fetchCompleted: successful.length,
+        fetchFailed: fetched.filter((item) => item.error).length,
+        fetchTruncated: fetched.filter((item) => item.truncated).length,
       },
       states: stateCounts(recommendations),
       policy,
-      interestingStats: interestingStats(recommendations),
       recommendations: recommendations.map(recommendationJson),
-      syncFailures: syncResults.flatMap((result) => result.error
-        ? [{ userHandle: result.candidate.user.userHandle, error: result.error }]
-        : []),
-      limitations: limitations(policy?.evidence),
+      fetchFailures: fetched.flatMap((item) => item.error ? [{ userHandle: item.candidate.user.userHandle, error: item.error }] : []),
+      limitations: [
+        "Fomo exposes at most 100 entries per official trader board and no global pagination here.",
+        "Freshly fetched history is retrospective and is discarded when this command exits.",
+        "Realized swap reconstruction excludes open-position mark-to-market and unclassified token routes.",
+      ],
     };
     if (values.json) console.log(JSON.stringify(report, jsonNumber, 2));
     else renderReport(report, recommendations.slice(0, top));
   } finally {
-    await session?.close();
-    store.close();
+    await session.close();
   }
 }
 
@@ -218,15 +146,12 @@ async function discoverUniverse(
   for (const window of ["24h", "7d", "30d", "all"] as const) {
     try {
       const board = await client.leaderboard(window, 100);
-      for (const entry of board.data) {
-        addScoutCandidate(candidates, entry.user, "leaderboard", { window, officialRank: entry.rank });
-      }
+      for (const entry of board.data) addScoutCandidate(candidates, entry.user, "leaderboard", { window, officialRank: entry.rank });
       if (!quiet) console.log(`  ${green("OK")} trader leaderboard ${window}: ${board.data.length}`);
     } catch (error) {
       discoveryFailure(errors, quiet, `trader leaderboard ${window}`, error);
     }
   }
-
   const clans = new Map<string, { id: string; rank: number; window: FomoClanWindow }>();
   for (const window of ["24h", "7d", "30d"] as const) {
     try {
@@ -243,9 +168,7 @@ async function discoverUniverse(
   await mapConcurrent([...clans.values()], Math.min(concurrency, 4), async (clan) => {
     try {
       const detail = await client.clan(clan.id, clan.window);
-      for (const member of detail.data.members) {
-        addScoutCandidate(candidates, member.user, "clan", { clanRank: clan.rank });
-      }
+      for (const member of detail.data.members) addScoutCandidate(candidates, member.user, "clan", { clanRank: clan.rank });
     } catch (error) {
       discoveryFailure(errors, true, `clan ${clan.id}`, error);
     }
@@ -253,88 +176,34 @@ async function discoverUniverse(
   if (!quiet) console.log(`  ${green("OK")} unique visible universe: ${candidates.size}`);
 }
 
-async function syncCandidate(
-  client: FomoClient,
-  store: FomoStore,
-  candidate: ScoutCandidate,
-  maxPages: number,
-): Promise<FomoSyncSummary> {
-  const handle = candidate.user.userHandle;
-  const runId = store.beginSync(handle);
-  try {
-    const result = await client.syncHandle(handle, { maxPages });
-    store.saveUser(result.user, result.summary.completedAt ?? undefined);
-    store.saveSwaps(result.swaps, runId);
-    const pages = flattenRawPages(result.raw);
-    for (const page of pages) store.saveRawPage(runId, page);
-    return store.completeSync(runId, {
-      userId: result.user.id,
-      swapCount: result.swaps.length,
-      rawPageCount: pages.length,
-      truncated: result.summary.truncated,
-    });
-  } catch (error) {
-    store.completeSync(runId, { error: error instanceof Error ? error.message : String(error) });
-    throw error;
-  }
+function researchUser(user: FomoUser): ResearchUser {
+  return {
+    id: user.id,
+    userHandle: user.userHandle,
+    handle: user.userHandle,
+    displayName: user.displayName,
+    clanId: user.clan?.id ?? null,
+    clanName: user.clan?.name ?? null,
+    address: user.address ?? null,
+    evmAddress: user.evmAddress ?? null,
+  };
 }
 
-function flattenRawPages(raw: {
-  user: RawFomoPage;
-  swaps: RawFomoPage[];
-  balances: RawFomoPage;
-  spotlight: RawFomoPage;
-  closedTrades: RawFomoPage[];
-}): RawFomoPage[] {
-  return [raw.user, ...raw.swaps, raw.balances, raw.spotlight, ...raw.closedTrades];
-}
-
-async function mapConcurrent<T, R>(
-  values: readonly T[],
-  concurrency: number,
-  worker: (value: T, index: number) => Promise<R>,
-): Promise<R[]> {
+async function mapConcurrent<T, R>(values: readonly T[], concurrency: number, worker: (value: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(values.length);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => {
     while (next < values.length) {
       const index = next++;
-      results[index] = await worker(values[index], index);
+      results[index] = await worker(values[index]);
     }
   }));
   return results;
 }
 
-function storedAsFomoUser(user: StoredFomoUser): FomoUser {
-  return {
-    id: user.id,
-    userHandle: user.userHandle,
-    displayName: user.displayName,
-    clan: user.clanId && user.clanName ? { id: user.clanId, name: user.clanName } : null,
-    address: user.address,
-    evmAddress: user.evmAddress,
-  };
-}
-
 function sortRecommendations(recommendations: ScoutRecommendation[]): ScoutRecommendation[] {
-  const order: Record<ScoutRecommendationState, number> = {
-    "research-candidate": 0,
-    watch: 1,
-    avoid: 2,
-    "insufficient-data": 3,
-  };
-  return recommendations.sort((a, b) =>
-    order[a.state] - order[b.state]
-    || b.trader.score - a.trader.score
-    || b.trader.reliability - a.trader.reliability
-  );
-}
-
-function sourceCounts(candidates: readonly ScoutCandidate[]): Record<string, number> {
-  return Object.fromEntries(["leaderboard", "clan", "local"].map((source) => [
-    source,
-    candidates.filter((candidate) => candidate.sources.some((value) => value === source)).length,
-  ]));
+  const order: Record<ScoutRecommendationState, number> = { "research-candidate": 0, watch: 1, avoid: 2, "insufficient-data": 3 };
+  return recommendations.sort((a, b) => order[a.state] - order[b.state] || b.trader.score - a.trader.score);
 }
 
 function stateCounts(recommendations: readonly ScoutRecommendation[]): Record<ScoutRecommendationState, number> {
@@ -358,40 +227,8 @@ function recommendationJson(recommendation: ScoutRecommendation) {
   };
 }
 
-function interestingStats(recommendations: readonly ScoutRecommendation[]): ScoutReport["interestingStats"] {
-  const eligible = recommendations.filter((item) => item.trader.eligible);
-  if (!eligible.length) return [];
-  const score = [...eligible].sort((a, b) => b.trader.score - a.trader.score)[0];
-  const expectancy = [...eligible].sort((a, b) =>
-    b.trader.analysis.metrics.expectancyUsd - a.trader.analysis.metrics.expectancyUsd
-  )[0];
-  const winRate = [...eligible].sort((a, b) =>
-    b.trader.analysis.metrics.bayesianWinRate - a.trader.analysis.metrics.bayesianWinRate
-  )[0];
-  const copyable = [...eligible].sort((a, b) =>
-    b.trader.analysis.metrics.copyableRatio - a.trader.analysis.metrics.copyableRatio
-  )[0];
-  return [
-    { label: "Best risk-adjusted score", trader: `@${score.trader.analysis.metrics.handle}`, value: score.trader.score.toFixed(2) },
-    { label: "Highest expectancy", trader: `@${expectancy.trader.analysis.metrics.handle}`, value: usd(expectancy.trader.analysis.metrics.expectancyUsd) },
-    { label: "Highest Bayesian win rate", trader: `@${winRate.trader.analysis.metrics.handle}`, value: pct(winRate.trader.analysis.metrics.bayesianWinRate) },
-    { label: "Most promptly observable", trader: `@${copyable.trader.analysis.metrics.handle}`, value: pct(copyable.trader.analysis.metrics.copyableRatio) },
-  ];
-}
-
-function limitations(evidence?: ScoutPolicy["evidence"]): string[] {
-  return [
-    "Fomo exposes at most 100 entries per official trader board and no global pagination here.",
-    "Clan/member responses may not represent every Fomo account.",
-    "Realized swap reconstruction excludes open-position mark-to-market and unclassified token routes.",
-    evidence === "walk-forward-causal"
-      ? "Walk-forward evidence is observational research, not a guarantee of future execution or returns."
-      : "The selected policy is retrospective only; collect timely observations before treating it as actionable.",
-  ];
-}
-
-function renderReport(report: ScoutReport, recommendations: readonly ScoutRecommendation[]): void {
-  console.log(banner("autonomous trader scout"));
+function renderReport(report: any, recommendations: readonly ScoutRecommendation[]): void {
+  console.log(banner("fresh trader scout"));
   console.log(table(
     [{ header: "Universe" }, { header: "Count", align: "right" }],
     [
@@ -404,21 +241,14 @@ function renderReport(report: ScoutReport, recommendations: readonly ScoutRecomm
       ["Insufficient data", String(report.states["insufficient-data"])],
     ],
   ));
-  if (report.interestingStats.length) {
-    console.log(banner("interesting standouts"));
-    console.log(table(
-      [{ header: "Stat" }, { header: "Trader" }, { header: "Value", align: "right" }],
-      report.interestingStats.map((item) => [item.label, item.trader, item.value]),
-    ));
-  }
-  console.log(banner("copy-quality trader stats"));
+  console.log(banner("retrospective trader stats"));
   console.log(table(
     [
       { header: "State" }, { header: "Trader" }, { header: "Score", align: "right" },
       { header: "ROIC", align: "right" }, { header: "Win", align: "right" },
       { header: "PF", align: "right" }, { header: "MDD", align: "right" },
       { header: "Closed", align: "right" }, { header: "Cover", align: "right" },
-      { header: "Reliable", align: "right" }, { header: "Copyable", align: "right" },
+      { header: "Reliable", align: "right" },
     ],
     recommendations.map((item) => {
       const metrics = item.trader.analysis.metrics;
@@ -426,41 +256,16 @@ function renderReport(report: ScoutReport, recommendations: readonly ScoutRecomm
         stateLabel(item.state), `@${metrics.handle}`, item.trader.score.toFixed(2), pct(metrics.realizedRoic),
         pct(metrics.bayesianWinRate), Number.isFinite(metrics.profitFactor) ? metrics.profitFactor.toFixed(2) : "inf",
         pct(metrics.maxDrawdownPct / 100), String(metrics.closedOutcomeCount), pct(metrics.basisCoverage),
-        pct(item.trader.reliability), pct(metrics.copyableRatio),
+        pct(item.trader.reliability),
       ];
     }),
   ));
-  if (report.policy) renderPolicy(report.policy);
-  console.log(banner("when not to copy"));
-  console.log(`  ${red("STOP")} History is incomplete, truncated, stale, or below sample and coverage gates.`);
-  console.log(`  ${red("STOP")} Win rate, profit factor, drawdown, or observation delay misses the policy.`);
-  console.log(`  ${red("STOP")} Liquidity, impact, token tax, gas, or execution differs from assumptions.`);
-  if (report.policy?.evidence !== "walk-forward-causal") {
-    console.log(`  ${gold("RESEARCH ONLY")} No positive entry-and-exit causal policy has enough outcomes yet.`);
+  if (report.policy) {
+    console.log(banner("retrospective pattern screen"));
+    console.log(dim(`  Pattern ${report.policy.pattern.id.slice(0, 8)} screened ${report.policy.tradeCount} historical outcomes.`));
   }
-  console.log(dim(`\n  Discovery errors: ${report.universe.discoveryErrors.length}. Full reasons: fomo scout --cached --json`));
-  console.log(dim("  Broadest visible Fomo universe, not proof of every account. This command never places trades.\n"));
-}
-
-function renderPolicy(policy: ScoutPolicy): void {
-  console.log(banner(policy.evidence === "walk-forward-causal"
-    ? "when to copy · observed-time validated"
-    : "when to copy · research hypothesis"));
-  console.log(table(
-    [{ header: "Condition" }, { header: "Value" }],
-    [
-      ["Minimum closed outcomes", String(policy.pattern.minClosed)],
-      ["Minimum Bayesian win rate", pct(policy.pattern.minWinRate)],
-      ["Minimum profit factor", policy.pattern.minProfitFactor.toFixed(2)],
-      ["Maximum realized drawdown", pct(policy.pattern.maxDrawdownPct / 100)],
-      ["Maximum leaders", String(policy.pattern.topTraders)],
-      ["Observe and act within", `${policy.pattern.delaySeconds}s`],
-      ["Assumed one-side slippage", `${policy.pattern.slippageBps} bps`],
-      ["Evaluated outcomes", String(policy.tradeCount)],
-      ["Simulated return per copy", pct(policy.returnPct)],
-      ...(policy.positiveFoldRatio === null ? [] : [["Positive folds", pct(policy.positiveFoldRatio)]]),
-    ],
-  ));
+  console.log(`\n  ${gold("RESEARCH ONLY")} Fresh backfilled history does not establish live availability or execution timing.`);
+  console.log(dim("  All fetched research data remains in memory and is discarded on exit. This command never places trades.\n"));
 }
 
 function stateLabel(state: ScoutRecommendationState): string {
@@ -476,23 +281,16 @@ function discoveryFailure(errors: string[], quiet: boolean, source: string, erro
   if (!quiet) console.log(`  ${red("FAIL")} ${message}`);
 }
 
-function progress(label: "SYNC" | "FAIL", current: number, total: number, handle: string, error?: string): void {
+function progress(label: "FETCH" | "FAIL", current: number, total: number, handle: string, error?: string): void {
   const status = label === "FAIL" ? red(label) : green(label);
-  const line = `  ${status} ${current}/${total} @${handle}${error ? ` · ${conciseError(error)}` : ""}`;
+  const line = `  ${status} ${current}/${total} @${handle}${error ? ` · ${error.replaceAll(/\s+/g, " ").slice(0, 90)}` : ""}`;
   process.stdout.write(label === "FAIL" ? `\r${line}\n` : `\r${line.padEnd(76)}`);
-}
-
-function conciseError(error: string): string {
-  if (/(?:HTTP\s*)?429|rate[ -]?limit|too many requests/i.test(error)) return "Fomo rate limit (HTTP 429)";
-  if (/404|not found/i.test(error)) return "profile no longer available";
-  if (/401|403|authentication|login/i.test(error)) return "authentication rejected; run fomo login";
-  return error.replaceAll(/\s+/g, " ").slice(0, 90);
 }
 
 function readGrid(file: string | undefined): PatternGridInput {
   if (!file) return {};
   const value: unknown = JSON.parse(readFileSync(file, "utf8"));
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pattern config must be a JSON object");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pattern config must contain a JSON object");
   return value as PatternGridInput;
 }
 
@@ -526,8 +324,4 @@ function jsonNumber(_key: string, value: unknown): unknown {
 
 function pct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
-}
-
-function usd(value: number): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
 }

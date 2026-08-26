@@ -1,8 +1,8 @@
 import type { FomoUser } from "../fomo/types.ts";
-import type { CopyPattern, ScreenedPattern, ValidatedPattern } from "./patterns.ts";
+import type { CopyPattern, ScreenedPattern } from "./patterns.ts";
 import type { RankedTrader } from "./traders.ts";
 
-export type ScoutSource = "leaderboard" | "clan" | "local";
+export type ScoutSource = "leaderboard" | "clan";
 
 export type ScoutCandidate = {
   user: FomoUser;
@@ -21,13 +21,11 @@ export type ScoutRecommendation = {
 };
 
 export type ScoutPolicy = {
-  evidence: "walk-forward-causal" | "retrospective-noncausal";
+  evidence: "retrospective";
   pattern: CopyPattern;
   tradeCount: number;
   returnPct: number;
   maxDrawdownPct: number;
-  positiveFoldRatio: number | null;
-  worstFoldReturnPct: number | null;
 };
 
 export function addScoutCandidate(
@@ -101,36 +99,14 @@ export function recommendScoutTraders(
     if (metrics.profitFactor >= 1.25) candidateReasons.push("profit factor at least 1.25");
     if (metrics.bayesianWinRate >= 0.55) candidateReasons.push("Bayesian win rate at least 55%");
     if (metrics.maxDrawdownPct <= 40) candidateReasons.push("realized drawdown at most 40%");
-    if (metrics.copyableRatio >= 0.5) candidateReasons.push("at least half of priced events observed promptly");
-    if (candidateReasons.length === 5) return { state: "research-candidate", reasons: candidateReasons, trader };
-    return { state: "watch", reasons: ["profitable sample, but not every copy-quality gate passed"], trader };
+    if (candidateReasons.length === 4) return { state: "research-candidate", reasons: candidateReasons, trader };
+    return { state: "watch", reasons: ["profitable sample, but not every quality gate passed"], trader };
   });
 }
 
 export function selectScoutPolicy(
   retrospective: readonly ScreenedPattern[],
-  validated: readonly ValidatedPattern[],
 ): ScoutPolicy | null {
-  const causal = [...validated].filter((result) =>
-    result.tradeCount >= 10 && result.returnPct > 0 && result.positiveFoldRatio >= 0.5
-  ).sort((a, b) =>
-    b.positiveFoldRatio - a.positiveFoldRatio
-    || b.worstFoldReturnPct - a.worstFoldReturnPct
-    || b.returnPct - a.returnPct
-    || a.maxDrawdownPct - b.maxDrawdownPct
-    || a.pattern.id.localeCompare(b.pattern.id)
-  )[0];
-  if (causal) {
-    return {
-      evidence: "walk-forward-causal",
-      pattern: causal.pattern,
-      tradeCount: causal.tradeCount,
-      returnPct: causal.returnPct,
-      maxDrawdownPct: causal.maxDrawdownPct,
-      positiveFoldRatio: causal.positiveFoldRatio,
-      worstFoldReturnPct: causal.worstFoldReturnPct,
-    };
-  }
   const exploratory = [...retrospective].filter((result) => result.tradeCount >= 10 && result.returnPct > 0)
     .sort((a, b) =>
       b.returnPct - a.returnPct
@@ -139,13 +115,11 @@ export function selectScoutPolicy(
       || a.pattern.id.localeCompare(b.pattern.id)
     )[0];
   return exploratory ? {
-    evidence: "retrospective-noncausal",
+    evidence: "retrospective",
     pattern: exploratory.pattern,
     tradeCount: exploratory.tradeCount,
     returnPct: exploratory.returnPct,
     maxDrawdownPct: exploratory.maxDrawdownPct,
-    positiveFoldRatio: null,
-    worstFoldReturnPct: null,
   } : null;
 }
 
